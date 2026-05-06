@@ -57,6 +57,8 @@ y no cambian de nombre. Los campos nuevos corresponden a `PACKAGES`.
 
 | Campo anterior | Campo nuevo | Tipo Python | Columna BD | Cambio / Motivo |
 |---|---|---|---|---|
+| _(existente)_ | `client_name` | `str \| None` | `client_name (text)` en `QUOTE_REQUESTS` | Nombre del cliente; columna no documentada hasta ahora |
+| _(existente)_ | `client_email` | `str \| None` | `client_email (text)` en `QUOTE_REQUESTS` | Email del cliente; columna no documentada hasta ahora |
 | _(existente)_ | `destination` | `str \| None` | `destination_label` | Sin cambio |
 | _(existente)_ | `departure_city` | `str \| None` | `origin_label` | Sin cambio |
 | _(existente)_ | `trip_start_iso` | `str \| None` | `depart_date` | Sin cambio |
@@ -116,3 +118,151 @@ y no cambian de nombre. Los campos nuevos corresponden a `PACKAGES`.
                                     →  Backend inserta FLIGHT_OPTIONS, HOTEL_OPTIONS, PACKAGES
                                     →  Backend devuelve resultado al frontend
    ```
+
+---
+
+## TravelQueryOutput — campos del envelope no cubiertos antes
+
+Los campos de nivel raíz del JSON de salida (`summary`, `warnings`, `meta`) no estaban documentados
+con su destino en BD. Se completan aquí.
+
+### `summary` y `warnings`
+
+| Campo agente | Tipo | Destino BD | Nota |
+|---|---|---|---|
+| `summary` | `str` | `rationale_text` en `PACKAGES` | Frase corta generada por el LLM writer (ya mencionado en Nota 3) |
+| `warnings` | `list[str]` | `package_snapshot_jsonb` en `PACKAGES` | Sin columna dedicada; el blob completo lo captura |
+
+### `meta` — bloque de metadatos de ejecución
+
+| Campo agente | Tipo | Destino BD | Nota |
+|---|---|---|---|
+| `meta.source` | `str` | `package_snapshot_jsonb` | Siempre `"langgraph"`; identifica el motor del agente |
+| `meta.intent` | `str` | `package_snapshot_jsonb` | `"flight"` / `"hotel"` / `"both"` / `"unknown"`. **Recomendación:** agregar columna `search_intent (text)` en `PACKAGES` para analíticas |
+| `meta.composite_query` | `str \| null` | `package_snapshot_jsonb` | Query combinada que usó el agente internamente |
+| `meta.timings.flight_ms` | `int \| null` | `package_snapshot_jsonb` | Tiempo de respuesta de la herramienta de vuelos en ms |
+| `meta.timings.hotel_ms` | `int \| null` | `package_snapshot_jsonb` | Tiempo de respuesta de la herramienta de hoteles en ms |
+| `meta.warnings_count` | `int` | — | Derivado de `len(warnings)`; no requiere columna |
+| `meta.tool_keys` | `dict` | `package_snapshot_jsonb` | Claves presentes en la respuesta de SerpAPI; solo para debugging |
+| `meta.serpapi_signals` | `dict` | `package_snapshot_jsonb` | Errores HTTP y de API de SerpAPI (`null` cuando todo OK) |
+
+---
+
+## Acciones pendientes para los equipos
+
+| # | Equipo | Acción |
+|---|---|---|
+| 1 | **BD** | Confirmar que columna `rationale_text (text)` existe en `PACKAGES` |
+| 2 | **BD** | Confirmar nombres exactos `client_name` y `client_email` en `QUOTE_REQUESTS` |
+| 3 | **BD** | Evaluar agregar `search_intent (text)` en `PACKAGES` para consultas analíticas sobre `meta.intent` |
+| 4 | **BD** | Confirmar si `normalized_search` debe persistirse como `normalized_search_jsonb` en `QUOTE_REQUESTS` (útil para re-ejecutar búsquedas) |
+| 5 | **Backend** | El campo `meta` completo y `warnings` quedan cubiertos por `package_snapshot_jsonb`; no se necesitan columnas adicionales salvo lo indicado en punto 3 |
+
+---
+
+## JSON de salida canónico (referencia completa)
+
+Forma exacta que emite el agente. Todos los campos `null` son válidos; el backend debe tolerarlos.
+
+```json
+{
+  "summary": "Found 3 flight option(s). Found 3 hotel option(s).",
+  "flight_options": [
+    {
+      "title": "Best flights option",
+      "total_price": 1308.0,
+      "currency": "USD",
+      "total_duration_min": 465,
+      "layover_count": 0,
+      "airline": "Air France",
+      "departure_token": "WyJKRksiLCIyMDI2LTA0LTE1IiwiQ0RHIiwiMjAyNi0wNC0xNSIsbnVsbCwyXQ==",
+      "segments_jsonb": [
+        {
+          "departure_airport": { "id": "JFK", "time": "2026-04-15 10:30" },
+          "arrival_airport": { "id": "CDG", "time": "2026-04-15 23:15" },
+          "duration": 465,
+          "airline": "Air France",
+          "flight_number": "AF007"
+        }
+      ],
+      "emissions_kg": 245.0,
+      "ranking_score": 1.0,
+      "raw_option_jsonb": {}
+    }
+  ],
+  "hotel_options": [
+    {
+      "property_name": "Hotel Le Marais",
+      "total_rate": 1435.0,
+      "nightly_rate": 205.0,
+      "currency": "USD",
+      "overall_rating": 4.2,
+      "location": "Le Marais District, Paris",
+      "property_token": "ChcIop2Ij...",
+      "location_rating": 4.5,
+      "review_count": 1240,
+      "amenities_jsonb": ["Free WiFi", "Breakfast included", "Spa access"],
+      "free_cancellation": true,
+      "ranking_score": 1.0,
+      "raw_option_jsonb": {}
+    }
+  ],
+  "warnings": [],
+  "meta": {
+    "source": "langgraph",
+    "intent": "both",
+    "composite_query": "Flights and hotels to Paris Apr 15-22 2026 for 2 adults budget 8000-12000 USD",
+    "timings": {
+      "flight_ms": 1234,
+      "hotel_ms": 987
+    },
+    "warnings_count": 0,
+    "tool_keys": {
+      "flight": ["search_metadata", "search_parameters", "flights", "other_flights"],
+      "hotel": ["search_metadata", "search_parameters", "properties"]
+    },
+    "serpapi_signals": {
+      "flight_http": null,
+      "flight_api": null,
+      "hotel_http": null,
+      "hotel_api": null
+    }
+  },
+  "registration": {
+    "quote_request_id": null,
+    "client_name": "Jane Doe",
+    "client_email": "client@example.com",
+    "destination": "Paris, France",
+    "departure_city": "New York",
+    "trip_start_iso": "2026-04-15",
+    "trip_end_iso": "2026-04-22",
+    "travelers": "2 Adults",
+    "min_budget": 8000.0,
+    "max_budget": 12000.0,
+    "special_preferences": "Romantic experiences, fine dining, boutique hotels in central locations",
+    "normalized_search": {
+      "origin": "JFK",
+      "destination": "CDG",
+      "depart_date": "2026-04-15",
+      "return_date": "2026-04-22",
+      "hotel_city": "Paris",
+      "hotel_checkin": "2026-04-15",
+      "hotel_checkout": "2026-04-22"
+    },
+    "total_price": 2743.0,
+    "currency": "USD",
+    "within_budget": true,
+    "tier": "budget",
+    "quality_score": 1.0,
+    "price_breakdown": {
+      "flight": 1308.0,
+      "hotel": 1435.0,
+      "total": 2743.0,
+      "currency": "USD"
+    }
+  }
+}
+```
+
+> **Nota `tier`:** el agente emite `"budget"` / `"standard"` / `"premium"` según el ratio `total_price / max_budget`.
+> El frontend puede mapear estos valores a etiquetas de display (p.ej. "Economy Package", "Standard Package", "Premium Package") sin que el agente deba conocer esos nombres.

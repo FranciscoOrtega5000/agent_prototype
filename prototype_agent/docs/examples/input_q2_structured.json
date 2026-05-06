@@ -1,0 +1,16 @@
+{
+  "travel_request": {
+    "client_name": "Maria Lopez",
+    "client_email": "maria.lopez@example.com",
+    "destination": "Tokyo, Japan",
+    "departure_city": "Los Angeles",
+    "start_date": "2026-10-05",
+    "end_date": "2026-10-15",
+    "travelers": "2 Adults",
+    "min_budget": 4000,
+    "max_budget": 7000,
+    "special_preferences": "Looking for clean hotels near Shinjuku. Prefer non-stop flights.",
+    "currency": "USD"
+  },
+  "user_query": "Find flights and hotels for our Tokyo trip"
+}

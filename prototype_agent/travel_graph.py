@@ -332,7 +332,7 @@ def _guess_currency(req: TravelRequest | None, preferences: dict[str, Any]) -> s
         return c.strip().upper()
     if req and req.currency:
         return str(req.currency).strip().upper()
-    return "MXN"
+    return "USD"
 
 
 def _guess_gl_hl(locale: str | None) -> tuple[str, str]:
@@ -884,7 +884,7 @@ def _to_flight_options(data: dict[str, Any], include_raw: bool, max_options: int
         emissions_kg: float | None = None
         if emissions_raw is not None:
             try:
-                emissions_kg = float(emissions_raw)
+                emissions_kg = round(float(emissions_raw) / 1000, 2)
             except (TypeError, ValueError):
                 pass
 
@@ -920,7 +920,7 @@ def _to_hotel_options(data: dict[str, Any], include_raw: bool, max_options: int)
     for idx, item in enumerate(data.get("properties", [])[:max_options]):
         rate = item.get("rate_per_night") or {}
 
-        nightly_raw = rate.get("lowest")
+        nightly_raw = rate.get("extracted_lowest")
         nightly_rate: float | None = None
         if nightly_raw is not None:
             try:
@@ -929,7 +929,7 @@ def _to_hotel_options(data: dict[str, Any], include_raw: bool, max_options: int)
                 pass
 
         total_raw = item.get("total_rate", {})
-        total_lowest = total_raw.get("lowest") if isinstance(total_raw, dict) else None
+        total_lowest = total_raw.get("extracted_lowest") if isinstance(total_raw, dict) else None
         total_rate: float | None = None
         if total_lowest is not None:
             try:
