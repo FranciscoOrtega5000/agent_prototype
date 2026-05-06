@@ -1,0 +1,6 @@
+langchain>=1.0
+langgraph
+langchain-nvidia-ai-endpoints
+httpx
+python-dotenv
+dateparser>=1.2
