@@ -230,5 +230,7 @@ class TravelGraphState(TypedDict, total=False):
     meta_timing_flight_ms: int
     meta_timing_hotel_ms: int
     warnings: list[str]
+    flight_warnings: list[str]
+    hotel_warnings: list[str]
     output: TravelQueryOutput
     composite_query: str

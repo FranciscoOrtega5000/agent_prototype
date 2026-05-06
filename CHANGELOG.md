@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.3.0] — 2026-05-06
+
+Production audit pass. Bug fixes, parallel graph execution, observability improvements, and documentation consolidation.
+
+---
+
+### Fixed
+
+| Bug | File | Fix |
+|---|---|---|
+| Hotel `nightly_rate` / `total_rate` always `null` | `travel_graph.py` | Read `extracted_lowest` (numeric) instead of `lowest` (string like `"$105"`) from SerpAPI |
+| `emissions_kg` stored in grams — 1000× too large | `travel_graph.py` | Divide `carbon_emissions.this_flight` by 1000 before storing |
+| Default currency `"MXN"` for queries with no explicit currency | `travel_graph.py` | Changed fallback from `"MXN"` to `"USD"` |
+| `state["parsed_input"]` raises `KeyError` if parser node fails | `travel_graph.py` | Changed to `state.get("parsed_input")` with `None` guard in both tool nodes |
+| `cp .env.example .env` fails — file is in repo root, not `prototype_agent/` | `prototype_agent/README.md` | Fixed path to `cp ../.env.example .env` |
+
+---
+
+### Changed
+
+#### Parallel graph execution (`travel_graph.py`)
+
+Flight and hotel searches now run **simultaneously** instead of sequentially. For `intent=both` queries this halves the API wait time.
+
+- Removed `_route_from_guard()` and `_post_flight_edge()` — sequential conditional routing functions, no longer needed
+- `build_travel_graph()` now fans out from `input_guard` to both `flight_tool_node` and `hotel_tool_node` via direct edges; LangGraph joins at `response_summarizer` once both complete
+- Each tool node self-gates via `tool_plan` check and returns `{}` immediately if not in plan
+- Parallel nodes write to dedicated state keys (`flight_warnings`, `hotel_warnings`) instead of the shared `warnings` key, avoiding LangGraph channel conflicts; `response_summarizer` merges all three at start
+
+#### LLM initialization observability (`travel_graph.py`)
+
+- Added `import logging` and module-level `logger = logging.getLogger(__name__)`
+- LLM init failure now logs `WARNING` with exception type + message instead of silently setting `llm_parser = None`
+- Added `_LLM_AVAILABLE` module flag so operators can detect degraded mode at startup
+
+#### State schema (`graph_state.py`)
+
+| New field | Type | Purpose |
+|---|---|---|
+| `flight_warnings` | `list[str]` | Warnings emitted by the flight tool node (parallel-safe) |
+| `hotel_warnings` | `list[str]` | Warnings emitted by the hotel tool node (parallel-safe) |
+
+---
+
+### Added
+
+| Item | Description |
+|---|---|
+| `prototype_agent/docs/examples/example_runs.md` | Verified input + output JSON for both query modes (NL and structured), including bug-fix confirmation |
+| `prototype_agent/docs/examples/input_q1_nl.json` | Reference NL query input (Paris, Jul 2026) |
+| `prototype_agent/docs/examples/input_q2_structured.json` | Reference structured query input (Tokyo, Oct 2026) |
+| `prototype_agent/docs/examples/output_q1_nl.json` | Captured SerpAPI output for Q1 |
+| `prototype_agent/docs/examples/output_q2_structured.json` | Captured SerpAPI output for Q2 |
+| Canonical JSON output spec | Added to `docs/CAMBIOS_CAMPOS.md` — full annotated example, envelope field mappings, DB action items for backend and DB teams |
+
+---
+
+### Reorganized
+
+| Before | After |
+|---|---|
+| `prototype_agent/CAMBIOS_CAMPOS.md` | `prototype_agent/docs/CAMBIOS_CAMPOS.md` |
+| `prototype_agent/SIMPLE_GUIDE.md` | `prototype_agent/docs/SIMPLE_GUIDE.md` |
+
+---
+
 ## [0.2.0] — 2026-05-06
 
 Complete stabilisation pass. Agent now works reliably with structured JSON input (simulating the frontend form), pure natural-language queries, and hybrid combinations. Output fields aligned to the production DB schema.

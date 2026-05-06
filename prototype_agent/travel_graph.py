@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
+
+logger = logging.getLogger(__name__)
 
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langgraph.graph import END, START, StateGraph
@@ -58,9 +61,17 @@ hotel_runner: HotelToolRunner = DefaultHotelToolRunner()
 try:
     llm_parser = ChatNVIDIA(model=MODEL, temperature=0)
     llm_writer = ChatNVIDIA(model=MODEL, temperature=0.2)
-except Exception:
+    _LLM_AVAILABLE = True
+except Exception as exc:
     llm_parser = None
     llm_writer = None
+    _LLM_AVAILABLE = False
+    logger.warning(
+        "LLM initialization failed — running in heuristic-only mode. "
+        "Verify NVIDIA_API_KEY and model availability. Error: %s: %s",
+        type(exc).__name__,
+        exc,
+    )
 
 
 def _maybe_travel_request(raw: Any) -> TravelRequest | None:
@@ -708,29 +719,6 @@ def _missing_field_names(state: TravelGraphState) -> set[str]:
     return {mf.field for mf in (state.get("missing_fields") or [])}
 
 
-def _route_from_guard(state: TravelGraphState) -> str:
-    tool_plan = list(state.get("tool_plan") or [])
-    if not tool_plan:
-        return "summarize"
-
-    missing = _missing_field_names(state)
-    flight_blocked = missing & {"origin", "destination", "depart_date"}
-    hotel_blocked = missing & {"hotel_city", "hotel_checkin", "hotel_checkout"}
-
-    if "flight" in tool_plan and not flight_blocked:
-        return "flight"
-    if "hotel" in tool_plan and not hotel_blocked:
-        return "hotel"
-    return "summarize"
-
-
-def _post_flight_edge(state: TravelGraphState) -> str:
-    tool_plan = list(state.get("tool_plan") or [])
-    missing = _missing_field_names(state)
-    hotel_blocked = missing & {"hotel_city", "hotel_checkin", "hotel_checkout"}
-    if "hotel" in tool_plan and not hotel_blocked:
-        return "hotel"
-    return "summarize"
 
 
 def _safe_json_loads(text: str) -> dict[str, Any]:
@@ -751,15 +739,21 @@ def _output_cfg(state: TravelGraphState) -> OutputConfig:
 
 
 def _flight_node(state: TravelGraphState) -> TravelGraphState:
-    parsed = state["parsed_input"]
-    warnings = list(state.get("warnings", []))
+    if "flight" not in (state.get("tool_plan") or []):
+        return {}
+
+    parsed = state.get("parsed_input")
+    if parsed is None:
+        return {}
+
+    flight_warnings: list[str] = []
     tool_msgs = []
 
     req = _maybe_travel_request(state.get("travel_request"))
 
     if not (parsed.origin and parsed.destination and parsed.depart_date):
-        warnings.append("Missing origin/destination/depart_date for flights.")
-        return {"warnings": warnings, "flight_tool_result": {}}
+        flight_warnings.append("Missing origin/destination/depart_date for flights.")
+        return {"flight_warnings": flight_warnings, "flight_tool_result": {}}
 
     adults = _parse_adults(req, parsed.preferences)
     currency = _guess_currency(req, parsed.preferences)
@@ -785,7 +779,7 @@ def _flight_node(state: TravelGraphState) -> TravelGraphState:
 
     try:
         result = flight_runner.run(payload)
-        warnings.extend(_tool_error_messages(result))
+        flight_warnings.extend(_tool_error_messages(result))
 
         flights_list = result.get("flights")
         if isinstance(flights_list, list) and not flights_list and isinstance(parsed.origin, str):
@@ -796,16 +790,16 @@ def _flight_node(state: TravelGraphState) -> TravelGraphState:
                     "arrival_id": _normalize_airport_like(parsed.destination),
                 }
                 result = flight_runner.run(retry_payload)
-                warnings.append("Applied airport-style normalization retry for flights.")
-                warnings.extend(_tool_error_messages(result))
+                flight_warnings.append("Applied airport-style normalization retry for flights.")
+                flight_warnings.extend(_tool_error_messages(result))
 
         return {
             "flight_tool_result": result,
-            "warnings": warnings,
+            "flight_warnings": flight_warnings,
             "meta_timing_flight_ms": int((time.time() - started) * 1000),
         }
     except Exception as exc:
-        warnings.append(f"Flight tool failed: {exc}")
+        flight_warnings.append(f"Flight tool failed: {exc}")
         try:
             retry_payload = {
                 **payload,
@@ -813,27 +807,33 @@ def _flight_node(state: TravelGraphState) -> TravelGraphState:
                 "arrival_id": payload["arrival_id"][:3].upper(),
             }
             result = flight_runner.run(retry_payload)
-            warnings.append("Flight tool retry used shortened airport codes.")
-            warnings.extend(_tool_error_messages(result))
+            flight_warnings.append("Flight tool retry used shortened airport codes.")
+            flight_warnings.extend(_tool_error_messages(result))
             return {
                 "flight_tool_result": result,
-                "warnings": warnings,
+                "flight_warnings": flight_warnings,
                 "meta_timing_flight_ms": int((time.time() - started) * 1000),
             }
         except Exception as exc2:
-            warnings.append(f"Flight tool retry failed: {exc2}")
-            return {"flight_tool_result": {}, "warnings": warnings}
+            flight_warnings.append(f"Flight tool retry failed: {exc2}")
+            return {"flight_tool_result": {}, "flight_warnings": flight_warnings}
 
 
 def _hotel_node(state: TravelGraphState) -> TravelGraphState:
-    parsed = state["parsed_input"]
-    warnings = list(state.get("warnings", []))
+    if "hotel" not in (state.get("tool_plan") or []):
+        return {}
+
+    parsed = state.get("parsed_input")
+    if parsed is None:
+        return {}
+
+    hotel_warnings: list[str] = []
 
     req = _maybe_travel_request(state.get("travel_request"))
 
     if not (parsed.hotel_city and parsed.hotel_checkin and parsed.hotel_checkout):
-        warnings.append("Missing hotel_city/hotel_checkin/hotel_checkout for hotels.")
-        return {"warnings": warnings, "hotel_tool_result": {}}
+        hotel_warnings.append("Missing hotel_city/hotel_checkin/hotel_checkout for hotels.")
+        return {"hotel_warnings": hotel_warnings, "hotel_tool_result": {}}
 
     started = time.time()
     output_cfg = _output_cfg(state)
@@ -854,15 +854,15 @@ def _hotel_node(state: TravelGraphState) -> TravelGraphState:
                 "max_results": max(3, output_cfg.max_options),
             }
         )
-        warnings.extend(_tool_error_messages(result))
+        hotel_warnings.extend(_tool_error_messages(result))
         return {
             "hotel_tool_result": result,
-            "warnings": warnings,
+            "hotel_warnings": hotel_warnings,
             "meta_timing_hotel_ms": int((time.time() - started) * 1000),
         }
     except Exception as exc:
-        warnings.append(f"Hotel tool failed: {exc}")
-        return {"hotel_tool_result": {}, "warnings": warnings}
+        hotel_warnings.append(f"Hotel tool failed: {exc}")
+        return {"hotel_tool_result": {}, "hotel_warnings": hotel_warnings}
 
 
 def _to_flight_options(data: dict[str, Any], include_raw: bool, max_options: int) -> list[FlightOption]:
@@ -973,7 +973,11 @@ def _snapshot_travelers(req: TravelRequest | None, preferences: dict[str, Any]) 
 def _summarizer_node(state: TravelGraphState) -> TravelGraphState:
     flight_data = state.get("flight_tool_result", {}) or {}
     hotel_data = state.get("hotel_tool_result", {}) or {}
-    warnings = list(state.get("warnings", []) or [])
+    warnings = (
+        list(state.get("warnings", []) or [])
+        + list(state.get("flight_warnings", []) or [])
+        + list(state.get("hotel_warnings", []) or [])
+    )
 
     parsed = state.get("parsed_input")
     req_resolved = _maybe_travel_request(state.get("travel_request"))
@@ -1194,23 +1198,11 @@ def build_travel_graph():
 
     graph.add_edge(START, "llm_parser_planner")
     graph.add_edge("llm_parser_planner", "input_guard")
-    graph.add_conditional_edges(
-        "input_guard",
-        _route_from_guard,
-        {
-            "flight": "flight_tool_node",
-            "hotel": "hotel_tool_node",
-            "summarize": "response_summarizer",
-        },
-    )
-    graph.add_conditional_edges(
-        "flight_tool_node",
-        _post_flight_edge,
-        {
-            "summarize": "response_summarizer",
-            "hotel": "hotel_tool_node",
-        },
-    )
+    # Fan out to both tool nodes in parallel; each self-gates on tool_plan.
+    # LangGraph waits for both to complete before running response_summarizer.
+    graph.add_edge("input_guard", "flight_tool_node")
+    graph.add_edge("input_guard", "hotel_tool_node")
+    graph.add_edge("flight_tool_node", "response_summarizer")
     graph.add_edge("hotel_tool_node", "response_summarizer")
     graph.add_edge("response_summarizer", "llm_response_writer")
     graph.add_edge("llm_response_writer", "output_validate")

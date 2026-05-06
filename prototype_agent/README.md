@@ -16,7 +16,7 @@ cd prototype_agent
 python3.11 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
+cp ../.env.example .env
 # Edit .env and add your keys
 ```
 
@@ -85,15 +85,24 @@ Runs 8 test cases covering pure NL, structured JSON, hybrid, flight-only, hotel-
 
 ## Project layout
 
-| Path | Role |
-|---|---|
-| `run_agent.py` | CLI entry: loads env, runs graph, prints JSON |
-| `travel_graph.py` | LangGraph `StateGraph`: parse → guard → tools → summarize → validate |
-| `graph_state.py` | Pydantic models aligned to DB schema (`FLIGHT_OPTIONS`, `HOTEL_OPTIONS`, `PACKAGES`) |
-| `serpapi_tools.py` | LangChain tools wrapping SerpAPI HTTP calls |
-| `run_agent_test.py` | 8-case test suite; run directly with `python run_agent_test.py` |
-| `CAMBIOS_CAMPOS.md` | Spanish field-change reference for the backend/DB team |
-| `docs/langgraph_migration.md` | Architecture deep-dive and scaling path |
+```
+prototype_agent/
+├── run_agent.py          # CLI entry: loads env, runs graph, prints JSON
+├── travel_graph.py       # LangGraph StateGraph: parse → [flight ‖ hotel] → summarize → validate
+├── graph_state.py        # Pydantic models aligned to DB schema
+├── serpapi_tools.py      # SerpAPI HTTP wrappers (Google Flights + Hotels)
+├── run_agent_test.py     # 8-case test suite
+└── docs/
+    ├── CAMBIOS_CAMPOS.md       # Field-change reference for backend/DB team (Spanish)
+    ├── SIMPLE_GUIDE.md         # Non-technical architecture overview
+    ├── langgraph_migration.md  # Architecture deep-dive
+    └── examples/
+        ├── example_runs.md           # Verified input/output for both query modes
+        ├── input_q1_nl.json          # Example: natural-language query
+        ├── input_q2_structured.json  # Example: structured TravelRequest
+        ├── output_q1_nl.json         # Captured output for Q1
+        └── output_q2_structured.json # Captured output for Q2
+```
 
 ## Output shape
 
@@ -118,4 +127,4 @@ Final JSON matches `TravelQueryOutput`:
 }
 ```
 
-See [`CAMBIOS_CAMPOS.md`](CAMBIOS_CAMPOS.md) for the full field mapping to the database schema.
+See [`docs/CAMBIOS_CAMPOS.md`](docs/CAMBIOS_CAMPOS.md) for the full field mapping to the database schema and the canonical JSON output example.
