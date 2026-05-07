@@ -23,4 +23,5 @@ langgraph_checkpoints.sqlite
 *.db
 
 # test JSON payloads with real data
+test*.json
 test_*.json

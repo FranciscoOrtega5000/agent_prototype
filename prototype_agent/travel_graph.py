@@ -92,106 +92,20 @@ def _primary_place_name(destination: str) -> str:
     return part if part else destination.strip()
 
 
-# Common city → IATA airport code lookup for cities whose names don't start with their code.
-_CITY_TO_IATA: dict[str, str] = {
-    "new york": "JFK",
-    "new york city": "JFK",
-    "nyc": "JFK",
-    "los angeles": "LAX",
-    "la": "LAX",
-    "mexico city": "MEX",
-    "ciudad de mexico": "MEX",
-    "cdmx": "MEX",
-    "guadalajara": "GDL",
-    "monterrey": "MTY",
-    "paris": "CDG",
-    "london": "LHR",
-    "madrid": "MAD",
-    "barcelona": "BCN",
-    "tokyo": "NRT",
-    "osaka": "KIX",
-    "dubai": "DXB",
-    "amsterdam": "AMS",
-    "frankfurt": "FRA",
-    "rome": "FCO",
-    "milan": "MXP",
-    "toronto": "YYZ",
-    "montreal": "YUL",
-    "chicago": "ORD",
-    "miami": "MIA",
-    "san francisco": "SFO",
-    "seattle": "SEA",
-    "dallas": "DFW",
-    "houston": "IAH",
-    "boston": "BOS",
-    "washington": "DCA",
-    "atlanta": "ATL",
-    "cancun": "CUN",
-    "cancún": "CUN",
-    "beijing": "PEK",
-    "shanghai": "PVG",
-    "hong kong": "HKG",
-    "singapore": "SIN",
-    "sydney": "SYD",
-    "melbourne": "MEL",
-    "sao paulo": "GRU",
-    "rio de janeiro": "GIG",
-    "buenos aires": "EZE",
-    "bogota": "BOG",
-    "bogotá": "BOG",
-    "lima": "LIM",
-    "istanbul": "IST",
-    "moscow": "SVO",
-    "seoul": "ICN",
-    "bangkok": "BKK",
-    "kuala lumpur": "KUL",
-    "jakarta": "CGK",
-    "cairo": "CAI",
-    "johannesburg": "JNB",
-    "nairobi": "NBO",
-    "ibiza": "IBZ",
-    "lisbon": "LIS",
-    "vienna": "VIE",
-    "zurich": "ZRH",
-    "munich": "MUC",
-    "brussels": "BRU",
-    "prague": "PRG",
-    "warsaw": "WAW",
-    "budapest": "BUD",
-    "athens": "ATH",
-}
-
-
 def _normalize_airport_like(value: str | None) -> str:
+    """Return a clean airport identifier: IATA code if value is already one, else the primary city name.
+
+    The LLM parsing step is responsible for resolving city names to IATA codes before this runs.
+    This function only sanitizes the output — it does not perform city-to-code lookups.
+    SerpAPI's Google Flights engine accepts both IATA codes and city names.
+    """
     if not value:
         return ""
-    s = value.strip()
-    # Strip country suffix like "Paris, France" -> "Paris"
-    primary = s.split(",")[0].strip()
-
-    # Check city lookup first (case-insensitive)
-    lookup_key = primary.lower()
-    if lookup_key in _CITY_TO_IATA:
-        return _CITY_TO_IATA[lookup_key]
-    # Also try the full string in case no comma present
-    full_key = s.lower()
-    if full_key in _CITY_TO_IATA:
-        return _CITY_TO_IATA[full_key]
-
-    # If already a 3-letter all-caps code, return as-is
-    if re.match(r'^[A-Z]{3}$', primary):
-        return primary
-
-    # Extract first contiguous 3-letter block (handles "MEX", "CDG" embedded in longer strings)
-    m = re.search(r'\b([A-Za-z]{3})\b', primary)
-    if m:
-        candidate = m.group(1).upper()
-        # Avoid common English words that look like codes
-        _skip = {"THE", "AND", "FOR", "ARE", "NOT", "FLY", "USA", "NYC"}
-        if candidate not in _skip:
-            return candidate
-
-    # Fall back to the primary city name as a text hint for SerpAPI
+    primary = value.strip().split(",")[0].strip()
+    # If already a 3-letter code (any case), return uppercased
+    if re.match(r'^[A-Za-z]{3}$', primary):
+        return primary.upper()
+    # Return the city name as-is for SerpAPI text resolution
     return primary[:60].strip()
 
 
@@ -250,8 +164,8 @@ def _build_composite_query(user_query: str, req: TravelRequest | None) -> str:
         if req.start_date_iso() or req.end_date_iso():
             lines.append(f"Trip window: {req.start_date_iso() or '?'} → {req.end_date_iso() or '?'}")
         if req.min_budget is not None or req.max_budget is not None:
-            # Use currency label so budget numbers aren't mistaken for years by dateparser
-            lines.append(f"Budget range: USD {req.min_budget} to USD {req.max_budget}")
+            curr = req.currency or "USD"
+            lines.append(f"Budget range: {req.min_budget} to {req.max_budget} ({curr})")
         if req.travelers_display():
             lines.append(f"Travelers: {req.travelers_display()}")
         if req.special_preferences:
@@ -393,20 +307,24 @@ def _extract_between(text: str, start_word: str, end_word: str) -> str | None:
 
 def _detect_intent(query: str) -> Literal["flight", "hotel", "both"]:
     q = query.lower()
-    hotel_only_nl = ("hotel-only" in q) or ("only hotel" in q) or ("just hotel" in q)
-    flight_only_nl = ("flight-only" in q) or ("only flight" in q) or ("just flight" in q)
-    has_flight = any(k in q for k in ["flight", "fly", "airline", "airport"])
-    has_hotel = any(k in q for k in ["hotel", "stay", "accommodation"])
+    # Only treat as single-tool when user explicitly says they need ONLY one.
+    # Phrases about flight/hotel preferences (round trip, economy, boutique) are NOT intent signals.
+    flight_only_nl = any(p in q for p in (
+        "flight-only", "only flight", "just flight", "just a flight",
+        "solo el vuelo", "solo vuelo", "solo necesito el vuelo",
+        "ya tengo hotel", "ya tengo hospedaje",
+    ))
+    hotel_only_nl = any(p in q for p in (
+        "hotel-only", "only hotel", "just hotel", "just a hotel",
+        "solo el hotel", "solo hotel", "solo necesito el hotel",
+        "ya tengo vuelo", "ya tengo boleto",
+    ))
     if flight_only_nl and not hotel_only_nl:
         return "flight"
     if hotel_only_nl and not flight_only_nl:
         return "hotel"
-    if has_flight and has_hotel:
-        return "both"
-    if has_flight:
-        return "flight"
-    if has_hotel:
-        return "hotel"
+    # Default: search both. A mention of "flight" or "hotel" without "only" is a preference,
+    # not a reason to suppress the other tool.
     return "both"
 
 
@@ -505,10 +423,24 @@ def _llm_plan(query: str) -> ParsedIntentPlan | None:
         "Extract travel intent and planning fields from the user request. "
         "Return structured data matching the schema.\n"
         "Rules:\n"
-        "- intent ∈ {flight, hotel, both, unknown}\n"
-        "- tool_plan is a subset of [flight, hotel] matching what to search.\n"
+        "- intent ∈ {flight, hotel, both, unknown}. Default to 'both' whenever the request "
+        "includes a departure city and a destination — that means search for flights AND hotels. "
+        "Set intent to 'flight' ONLY if the user explicitly says they need only a flight and "
+        "already have accommodation (e.g. 'flight only', 'solo el vuelo', 'ya tengo hotel'). "
+        "Set intent to 'hotel' ONLY if the user explicitly says they need only a hotel and "
+        "already have transport (e.g. 'hotel only', 'solo el hotel', 'ya tengo vuelo'). "
+        "Preferences about flight type (round trip, economy class, direct, business class, "
+        "'vuelo de ida y vuelta', 'clase económica', etc.) do NOT change intent away from 'both'.\n"
+        "- tool_plan is a subset of [flight, hotel] matching the intent above.\n"
         "- Dates must be ISO YYYY-MM-DD when confidently known.\n"
-        "- For origin and destination prefer airport-like codes when obvious; cities are acceptable hints.\n"
+        "- For origin and destination ALWAYS output the primary IATA airport code "
+        "(exactly 3 uppercase letters). Resolve any city name to its main international airport: "
+        "New York → JFK, Mexico City → MEX, Paris → CDG, London → LHR, Tokyo → NRT, "
+        "Los Angeles → LAX, Miami → MIA, Madrid → MAD, Barcelona → BCN, Rome → FCO, "
+        "Cancun → CUN, Bogota → BOG, Lima → LIM, Buenos Aires → EZE, São Paulo → GRU, "
+        "Dubai → DXB, Singapore → SIN, Bangkok → BKK, Sydney → SYD, Toronto → YYZ. "
+        "If the user already provides an IATA code, keep it unchanged. "
+        "For any city not listed above, resolve to its largest international airport code.\n"
         f"\nUSER REQUEST:\n{query}"
     )
     try:
@@ -544,6 +476,16 @@ def _merge_plans(llm_plan: ParsedIntentPlan | None, heuristic_plan: ParsedIntent
     return merged
 
 
+# 3-letter uppercase strings that are NOT IATA airport codes and must be rejected.
+_NOT_IATA = frozenset({
+    # Currency codes
+    "USD", "EUR", "GBP", "CAD", "AUD", "JPY", "MXN", "BRL", "CNY", "AED",
+    "CHF", "KRW", "SGD", "HKD", "NOK", "SEK", "DKK", "NZD", "ZAR", "INR",
+    # Common English words that are 3 letters
+    "THE", "AND", "FOR", "ARE", "NOT", "FLY", "USA", "NYC", "LAW", "AIR",
+})
+
+
 def _overlay_structured(plan: ParsedIntentPlan, seed: dict[str, Any]) -> ParsedIntentPlan:
     if not seed:
         return plan
@@ -555,8 +497,45 @@ def _overlay_structured(plan: ParsedIntentPlan, seed: dict[str, Any]) -> ParsedI
             continue
         if isinstance(val, str) and not val.strip():
             continue
+        # Don't overwrite a valid IATA code already resolved by the LLM with a raw city name.
+        # Exclude known non-airport 3-letter strings (currency codes, etc.).
+        if key in ("origin", "destination"):
+            current = getattr(plan, key, None)
+            if (
+                isinstance(current, str)
+                and re.match(r'^[A-Z]{3}$', current.strip())
+                and current.strip() not in _NOT_IATA
+            ):
+                continue
         kwargs[key] = val.strip() if isinstance(val, str) else val
     return plan.model_copy(update=kwargs) if kwargs else plan
+
+
+def _resolve_iata_if_needed(value: str | None) -> str | None:
+    """Return value as-is if already a valid IATA code; otherwise ask the LLM to resolve it.
+
+    Only triggers when a city name slipped through (e.g. LLM unavailable or parse failed).
+    Rejects known non-airport 3-letter strings (currency codes, common words).
+    """
+    if not value:
+        return value
+    s = value.strip().split(",")[0].strip()
+    if re.match(r'^[A-Z]{3}$', s) and s not in _NOT_IATA:
+        return s
+    if llm_parser is None:
+        return s
+    try:
+        result = llm_parser.invoke(
+            f"Output only the 3-letter IATA airport code for this city or place: {s}\n"
+            "Respond with exactly 3 uppercase letters and nothing else. Example: BCN"
+        )
+        code = (result.content if hasattr(result, "content") else str(result)).strip().upper()
+        m = re.search(r'\b([A-Z]{3})\b', code)
+        if m and m.group(1) not in _NOT_IATA:
+            return m.group(1)
+    except Exception:
+        pass
+    return s
 
 
 def _apply_nl_date_backfill(plan: ParsedIntentPlan, composite: str) -> ParsedIntentPlan:
@@ -678,8 +657,8 @@ def _llm_parser_planner_node(state: TravelGraphState) -> TravelGraphState:
     plan, missing = _recompute_missing_and_tools(plan)
     prefs = _plan_to_preferences(plan, prefs_extras)
 
-    origin_norm = _normalize_airport_like(plan.origin)
-    dest_norm = _normalize_airport_like(plan.destination)
+    origin_norm = _resolve_iata_if_needed(plan.origin)
+    dest_norm = _resolve_iata_if_needed(plan.destination)
 
     parsed = TravelQueryInput(
         user_query=composite,
@@ -747,8 +726,6 @@ def _flight_node(state: TravelGraphState) -> TravelGraphState:
         return {}
 
     flight_warnings: list[str] = []
-    tool_msgs = []
-
     req = _maybe_travel_request(state.get("travel_request"))
 
     if not (parsed.origin and parsed.destination and parsed.depart_date):
@@ -776,47 +753,21 @@ def _flight_node(state: TravelGraphState) -> TravelGraphState:
         payload["return_date"] = ret.strip()
 
     started = time.time()
-
     try:
         result = flight_runner.run(payload)
         flight_warnings.extend(_tool_error_messages(result))
-
-        flights_list = result.get("flights")
-        if isinstance(flights_list, list) and not flights_list and isinstance(parsed.origin, str):
-            if len(parsed.origin) > 4 or len((parsed.destination or "")) > 4:
-                retry_payload = {
-                    **payload,
-                    "departure_id": _normalize_airport_like(parsed.origin),
-                    "arrival_id": _normalize_airport_like(parsed.destination),
-                }
-                result = flight_runner.run(retry_payload)
-                flight_warnings.append("Applied airport-style normalization retry for flights.")
-                flight_warnings.extend(_tool_error_messages(result))
-
         return {
             "flight_tool_result": result,
             "flight_warnings": flight_warnings,
             "meta_timing_flight_ms": int((time.time() - started) * 1000),
         }
     except Exception as exc:
-        flight_warnings.append(f"Flight tool failed: {exc}")
-        try:
-            retry_payload = {
-                **payload,
-                "departure_id": payload["departure_id"][:3].upper(),
-                "arrival_id": payload["arrival_id"][:3].upper(),
-            }
-            result = flight_runner.run(retry_payload)
-            flight_warnings.append("Flight tool retry used shortened airport codes.")
-            flight_warnings.extend(_tool_error_messages(result))
-            return {
-                "flight_tool_result": result,
-                "flight_warnings": flight_warnings,
-                "meta_timing_flight_ms": int((time.time() - started) * 1000),
-            }
-        except Exception as exc2:
-            flight_warnings.append(f"Flight tool retry failed: {exc2}")
-            return {"flight_tool_result": {}, "flight_warnings": flight_warnings}
+        flight_warnings.append(f"Flight tool error: {exc}")
+        return {
+            "flight_tool_result": {},
+            "flight_warnings": flight_warnings,
+            "meta_timing_flight_ms": int((time.time() - started) * 1000),
+        }
 
 
 def _hotel_node(state: TravelGraphState) -> TravelGraphState:

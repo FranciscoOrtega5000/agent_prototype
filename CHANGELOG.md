@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.4.0] — 2026-05-06
+
+Flight tool hardening, LLM-based IATA resolution, intent detection fixes, and centralized documentation.
+
+---
+
+### Fixed
+
+| Bug | Location | Fix |
+|---|---|---|
+| `"Barcelona"` and `"Rome"` sent as-is to SerpAPI → HTTP 400 | `_overlay_structured` | Added guard: does not overwrite a valid IATA code already resolved by the LLM with the raw city name from the form |
+| Budget line `"USD 500.0 to USD 1500.0"` caused LLM to return `"USD"` as destination airport code | `_build_composite_query` | Changed format to `"500.0 to 1500.0 (USD)"` — currency no longer a leading standalone token |
+| `"USD"`, `"EUR"`, `"MXN"` passed as valid IATA codes to SerpAPI | `_resolve_iata_if_needed`, `_overlay_structured` | Added `_NOT_IATA` set; currency codes and common English words are now explicitly rejected |
+| `"Vuelo de ida y vuelta, clase económica"` suppressed hotel search (intent set to `"flight"`) | `_detect_intent`, `_llm_plan` | Flight preferences no longer change intent; only explicit "only" phrases do |
+| `_detect_intent` returned `"flight"` whenever the word "flight" appeared, even as a preference | `_detect_intent` | Removed `has_flight` fallback; default is now `"both"` unless explicit single-tool signal |
+
+---
+
+### Removed
+
+| Item | Reason |
+|---|---|
+| `_CITY_TO_IATA` hardcoded dict (65+ entries) | Replaced by LLM knowledge; any city in the world now resolves correctly |
+| Dirty retry block in `_flight_node` (empty-results normalization retry) | Masked real errors; IATA resolution now happens correctly in the parse step |
+| Dirty retry block in `_flight_node` (exception → `[:3].upper()` truncation) | Completely unsound; removed in favour of clean error surfacing |
+
+---
+
+### Added
+
+| Item | Description |
+|---|---|
+| `_resolve_iata_if_needed()` | Targeted LLM call for any city name that survives the parse step — only fires when needed |
+| `_NOT_IATA` frozenset | Explicit rejection list for currency codes and common English words that match the 3-letter IATA pattern |
+
+---
+
+### Changed
+
+| Item | Description |
+|---|---|
+| `_normalize_airport_like()` | Simplified from 30 lines to 9; no longer attempts regex extraction of 3-letter fragments from multi-word city names |
+| `_llm_plan` prompt | Now explicitly instructs LLM to always output IATA codes, and to treat `"vuelo de ida y vuelta"` / `"economy class"` as preferences, not intent signals |
+| `requirements.txt` | All versions pinned to exact matches from working venv |
+
+---
+
+### Documentation
+
+- Rewrote `README.md` — complete setup, usage, and docs index
+- Created `docs/ARCHITECTURE.md` — graph topology, parsing pipeline, IATA resolution flow, intent detection rules
+- Created `docs/OUTPUT_SCHEMA.md` — every output field with type, DB destination, and notes (replaces `CAMBIOS_CAMPOS.md`)
+- Created `docs/BACKEND_INTEGRATION.md` — recommended FastAPI wrapper, request/response contract, backend flow, production checklist
+
+---
+
 ## [0.3.0] — 2026-05-06
 
 Production audit pass. Bug fixes, parallel graph execution, observability improvements, and documentation consolidation.
